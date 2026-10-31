@@ -1,8 +1,10 @@
 # Training Data Generation Plan
 
-Status: proposal, 2026-10-31.
+Status: 2026-10-31. Stage A (the hand generator) is implemented in `kite_data/`; see [README.md](README.md). Stages B–D are still plans.
 
-This plan covers the synthetic kinematic data for the GET decoder in [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) (section "Training data"). It follows KITE's own recipe wherever KITE specifies one, so that the data stays usable with a pretrained KITE intent encoder ψ if one becomes available, and so that the KITE reference decoders can be trained on exactly the same data.
+Decisions so far: LEAP hands only; fewer joints means locking joints from the fingertip inward (not GET-Zero's link removal); lengths vary only on the five long links; thumbless hands are included.
+
+This plan covers the synthetic kinematic data for the GET decoder in [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) (section "Training data"). It follows KITE's own recipe wherever KITE specifies one. Our contacts should look like what KITE's ψ was trained on, and the decoder should expect intents one small step ahead of the current pose, which is how KITE's policy produces them.
 
 Sources: the KITE and GET-Zero papers (links and a fetch script in [reference/](reference/README.md)), GET-Zero's code ([real-stanford/get_zero @ 279652d](https://github.com/real-stanford/get_zero/tree/279652da160823521e881952f67870b0d98674ce)), MuJoCo Menagerie's LEAP model ([mujoco_menagerie/leap_hand @ b065505](https://github.com/google-deepmind/mujoco_menagerie/tree/b0655057a9df2abe39ea7fc989914ba6f248301c/leap_hand)), and checks run on those assets (section 2).
 
@@ -31,7 +33,7 @@ Sources: the KITE and GET-Zero papers (links and a fetch script in [reference/](
 - **KITE details are off.** KITE has three authors (Wang, Jin, Fang) and six simulated robot embodiments, not five.
 - **The wrist needs no arm workspace.** KITE samples it as a floating base anywhere in a 0.8 m cube, at any orientation. That answers the workspace open question: the arm only matters at deployment.
 - **The volume and compute estimates are low.** KITE uses 10^6 examples per embodiment. The overview's 0.5–1M total is far less per hand, and its 2–6 GPU-hour training estimate is far below KITE's.
-- **The variant table needs new code.** "Joints per finger 2–4" has to mean GET-Zero's link removal, unless we write a different generator. Continuous 0.8–1.2× lengths and attachment shifts do not exist in GET-Zero, so we have to build them.
+- **The variant table needs new code.** GET-Zero's link removal shortens a finger as it loses joints: the index finger reaches 140 mm with 4 joints, 105 mm with 3 and 88 mm with 2. A joint-count test on those hands would also be a length test. We therefore lock joints instead (decided), and wrote our own generator with continuous lengths and mount shifts, which GET-Zero lacks.
 
 ## 2. Measured facts about the LEAP assets
 
@@ -59,13 +61,17 @@ These were checked on 2026-10-31 with MuJoCo 3.17, trimesh and python-fcl, on GE
 
 **For the team:**
 
-1. If ψ isn't available in time, there are two options. (a) Re-implement ψ and train it jointly with our decoder. That gives us our own intent space but no KITE policy, so closed-loop evaluation needs scripted intent sequences. (b) Use the raw-contact fallback. The dataset below supports both.
-2. Should we include thumbless hands (54 more topologies)? Should GET-Zero's 1-joint fingers serve as an extra-hard test?
-3. What length range? GET-Zero's +1.5 cm parts correspond to scale factors of about 1.2–1.4, beyond 0.8–1.2. Recommendation: keep 0.8–1.2 for training and use those parts as an extrapolation test.
-4. Which split definitions (section 4.3)? Recommendation: exact-subset holdout.
-5. What data volume and GPU budget (section 4.5)?
-6. Which noise regime? KITE's is the default and is required for the baseline. A wide-noise mixture could be added as an ablation.
-7. Should the contact loss be tied to the labelled points, as in the overview, or be assignment-free, scoring each target against its nearest template point? Both need the template, which we store either way.
+1. ~~LEAP only or other hand designs too?~~ Decided: LEAP only.
+2. ~~How to make fingers with fewer joints?~~ Decided: lock joints from the fingertip inward at 0 rad. GET-Zero's link-removal hands become an extra test set.
+3. ~~Which links change length?~~ Decided: the five long links. The motor-to-motor brackets stay fixed.
+4. ~~Thumbless hands?~~ Decided: included (54 of the 243 topologies).
+5. If ψ isn't available in time, there are two options. (a) Re-implement ψ and train it jointly with our decoder. That gives us our own intent space but no KITE policy, so closed-loop evaluation needs scripted intent sequences. (b) Use the raw-contact fallback. The dataset supports both. (KITE's code and data are expected.)
+6. Which upper bound to compare against? Options: a re-implemented KITE decoder trained on each test hand (as the overview says), our GET decoder trained with the test hands included, or none. Test hands get their own training data either way.
+7. What length range? GET-Zero's +1.5 cm parts correspond to scale factors of about 1.2–1.4, beyond 0.8–1.2. Recommendation: keep 0.8–1.2 for training and use those parts as an extrapolation test.
+8. Which split definitions (section 4.3)? Recommendation: exact-subset holdout.
+9. What data volume and GPU budget (section 4.5)?
+10. Which noise regime? KITE's is the default. A wide-noise mixture could be added as an ablation.
+11. Should the contact loss be tied to the labelled points, as in the overview, or be assignment-free, scoring each target against its nearest template point? Both need the template, which we store either way.
 
 ## 4. Plan
 
@@ -76,46 +82,49 @@ These were checked on 2026-10-31 with MuJoCo 3.17, trimesh and python-fcl, on GE
 - **Split by hand, before sampling.** Nothing from a held-out hand reaches training, and geometry variants of one topology never straddle splits.
 - **Make everything deterministic.** Every output follows from (config, seed) and records the generator's git SHA.
 
-### 4.2 Stage A: hand assets
+### 4.2 Stage A: hand assets (implemented)
 
-1. **Fetch.** `scripts/fetch_assets.sh` clones GET-Zero (279652d) and Menagerie (b065505) at pinned commits. We use GET-Zero's 236 graph URDFs for topologies and its meshes and joint limits. If thumbless hands are wanted, they come from deleting the thumb chain.
-2. **Select topologies.** Use the 126 thumb-present topologies (180 if thumbless hands are included). Give each a readable ID such as `T4-I3-M0-R2` (joints per thumb, index, middle, ring) and keep its GET-Zero ID alongside.
-3. **Vary geometry.** Each hand instance is one topology plus one geometry draw.
-   - *Link lengths:* draw s ~ U[0.8, 1.2] independently for each of the five links GET-Zero lengthens (`mcp_joint`, `dip`, `fingertip`, `thumb_dip`, `thumb_fingertip`). Stretch along the link-frame y axis, the axis GET-Zero extends. Confine the stretch to a spacer band chosen once per base mesh, using a piecewise-linear map, so motor housings and fingertip pads keep their shape. The child joint's y offset moves by Δ = (s − 1)·L, and collision boxes translate or stretch with the band.
-   - *Attachment:* shift each finger-root joint origin by δ ~ U[−4, 4] mm along the palm's finger-spacing axis; the current spacing is 45.5 mm. Keep these shifts small, because each finger's base motor is part of the palm mesh and does not move with the finger.
-   - *Instances per topology:* one nominal instance (s = 1, δ = 0), plus G random draws (G = 6 for training topologies).
-   - *Validity gate:* no collision at q = 0 or at the canonical pose, and at least 5% collision-free under uniform sampling. Otherwise redraw.
-4. **Build the collision model.** Transplant Menagerie's boxes onto each link. Exclude Menagerie's listed pairs plus all parent–child pairs, and deform the boxes along with the geometry. Validate every hand against the exact mesh check on 2,000 configurations; the gate is at least 93% agreement (95.3% was measured on hand 001).
-5. **Build the surface template** (KITE's T^e).
-   - Oversample area-weighted points on each link's deformed visual mesh by about 4×.
-   - Drop points where fewer than 8 of 32 hemisphere rays escape the link's own mesh. Optionally also drop palm points covered by the finger roots at the canonical pose.
-   - Subsample to exactly 4,096 points per hand.
-   - Store each point's link index, local position, local outward normal and region (palm, index, middle, ring or thumb).
-   - Also store 32 farthest-point-sampled indices, in case the decoder adopts KITE-style surface tokens.
-6. **Write the hand descriptor** (`hand.npz` plus `hand.json`).
-   - *Joint order:* index, middle, ring, thumb; proximal to distal within each finger; at most 16 joints.
-   - *Per joint:* parent joint (−1 means the wrist), finger, depth, origin xyz, origin quaternion (rpy kept for parity with GET-Zero), axis, limits, leaf flag and LEAP motor ID.
-   - *Per link:* boxes, mesh and template slice.
-   - *Graph matrices:* shortest-path, ancestor and descendant, with the wrist as node 0. These are derived in code, and the adjacency convention (tree edges only, or GET-Zero's sibling edges) is a flag.
-7. **Run asset QA.**
-   - numpy FK matches MuJoCo FK to within 1e-9 m.
-   - The canonical pose is collision-free.
-   - Collision agreement meets the gate.
-   - Template visibility statistics look sane.
-   - A contact-sheet render of every hand is produced.
+1. **Fetch.** `scripts/fetch_assets.sh` clones GET-Zero (279652d) and Menagerie (b065505) at pinned commits into `third_party/`, which is git-ignored. From GET-Zero we use only the base LEAP URDF, its meshes and joint limits; its variant code is not used. Its generated hands are fetched too, for the extra test set (importer still to do).
+2. **Topologies.** Each finger is absent or has 2, 3 or 4 joints; a hand has at least 2 fingers. That gives 243 topologies, 189 of them with a thumb. A finger with fewer joints keeps every link: its joints are locked from the fingertip inward at 0 rad, so its length doesn't change. IDs read `I4-M3-R0-T2` (joints per index, middle, ring, thumb).
+3. **Geometry.** Each hand instance is one topology plus one geometry draw. Draw 0 is the nominal LEAP; draws 1–6 are random and deterministic in (seed, topology, draw).
+   - *Link lengths:* s ~ U[0.8, 1.2] independently for each of the five long links (`mcp_joint`, `dip`, `fingertip`, `thumb_dip`, `thumb_fingertip`). The stretch runs along the link-frame y axis, the axis GET-Zero extends, and only the middle half of the link [0.25 L, 0.75 L] is stretched, so motor housings and fingertip pads keep their shape. The child joint moves by Δ = (s − 1)·L. The brackets `pip`, `pip_4` and `thumb_pip` stay fixed.
+   - *Mounts:* index, middle and ring roots shift by δ ~ U[−4, 4] mm along the palm's finger-spacing axis (spacing is 45.5 mm). The palm's motor housing for that finger (Menagerie's box, grown by 2 mm) moves with it, fading out over 7 mm, so the palm never folds. The thumb mount stays fixed: its housing is fused into the palm mesh with no clear boundary.
+   - *Validity gate*, otherwise redraw:
+     - no box collision at q = 0;
+     - no exact-mesh intersection at q = 0 among the pairs the box model excludes (palm vs. finger bases, neighbouring bases), checked on simplified meshes;
+     - at least 5% collision-free under uniform joint sampling.
+
+     The simplified check matched full-resolution all-pairs checks on 28 of 28 hands, including the extremes of every range.
+4. **Collision model.** Menagerie's boxes and fingertip-pad meshes are attached to each link (frames match to 0.001°/0.11 mm) and deformed with the geometry. Menagerie's exclusion pairs are kept. The model is written as a collision-only MJCF.
+5. **Surface template** (KITE's T^e).
+   - 20,000 area-uniform candidates per base mesh, each tested with 32 hemisphere rays against its own part.
+   - Points where fewer than 8 rays escape are dropped. This visibility pass is cached in `data/cache/`.
+   - Per hand, 4,096 points are drawn in proportion to their deformed surface area.
+   - Each point stores its link index, link-frame position, outward normal and region (palm, index, middle, ring, thumb).
+   - The template also keeps 32 farthest-point-sampled indices at the zero pose, for KITE-style surface tokens.
+6. **Hand descriptor** (`hand.json`).
+   - *Joint order:* index, middle, ring, thumb; proximal to distal; locked joints included and flagged.
+   - *Per joint:* parent link, child link, origin xyz/rpy/quaternion, axis, limits, movable-parent index (−1 = wrist), depth, leaf flag and LEAP motor ID.
+   - *Graph matrices:* shortest-path, ancestor and descendant, computed by `Hand.graph()` with the wrist as node 0. GET-Zero's sibling-edge convention is a flag.
+7. **Outputs per hand:** `hand.json`, `hand.xml` (collision MJCF), `hand.urdf` and `template.npz`. The URDF's kinematics are exact; its visuals approximate the stretch.
+8. **QA:**
+   - 35 tests: FK matches MuJoCo to 1e-8, locking keeps finger shape, deformations never fold, the template is deterministic, the gate passes.
+   - Contact-sheet renders (`python -m kite_data.qa`).
+   - Per-hand gate statistics in `index.csv`.
 
 ### 4.3 Stage B: splits (fixed before sampling)
 
-Each topology goes into exactly one bucket, assigned in the order below. Counts are for the 126 thumb-present topologies.
+Each topology goes into exactly one bucket, assigned in the order below. Counts are for all 243 topologies.
 
 | Bucket | Definition | Topologies | Geometry |
 | --- | --- | --- | --- |
-| Finger subset | Exact finger sets {thumb, ring} and {thumb, index, ring} | 24 | Nominal only |
-| Combined | The same topologies as the finger-subset bucket | (24) | New random draws |
-| Joint count | Every remaining hand with a 3-joint index finger | 26 | Nominal plus new draws |
+| Finger subset | Exact finger sets {thumb, ring} and {thumb, index, ring} | 36 | Nominal only |
+| Combined | The same topologies as the finger-subset bucket | (36) | New random draws |
+| Joint count | Every remaining hand with a 3-joint index finger | 54 | Nominal plus new draws |
 | Validation | 8 random topologies from the rest, used for model selection only | 8 | Nominal plus draws |
-| Train | Everything else | 68 | Nominal plus 6 draws: 476 hand instances |
+| Train | Everything else | 145 | Nominal plus 6 draws: 1,015 hand instances |
 | Geometry | 10 training topologies with new draws (interpolation), plus GET-Zero's +1.5 cm parts where the topology is in our family (extrapolation) | (10) | New draws |
+| GET-Zero hands | GET-Zero's link-removal hands: a different way of building variants | external | As built by GET-Zero |
 
 Training still contains 3-joint middle and ring fingers, and the thumb and ring finger together inside larger hands. Each test therefore isolates exactly one new factor.
 
@@ -136,17 +145,17 @@ For each hand instance:
    - q_contact is collision-free;
    - the same seed produces byte-identical output.
 
-There are two regimes. `kite` is the default, used for the baseline and the main results. `wide` is an ablation in which about 20% of examples get σ_t = 5 cm and σ_R = 30°. Labels are defined the same way in both.
+There are two regimes. `kite` is the default, used for the main results. `wide` is an ablation in which about 20% of examples get σ_t = 5 cm and σ_R = 30°. Labels are defined the same way in both.
 
 Each example stores: hand ID, K, template indices (padded to 6), contacts (x, n) padded to 6, q_contact, q_init and q_goal (wrist as position plus quaternion; joints in canonical order, padded to 16), the mask, the regime and the seed. z lives in a separate, optional cache keyed by ψ version.
 
 ### 4.5 Stage D: volume, storage and compute
 
 - **Volume.**
-  - *Train:* 476 hands × 8,000 examples ≈ 3.8M. Raise the per-hand count if the GPU budget allows.
+  - *Train:* 1,015 hands × 4,000 examples ≈ 4M. Raise the per-hand count if the GPU budget allows; run a scaling test early (1k, 4k and 16k per hand on a few hands).
   - *Validation:* 1,000 examples per hand.
   - *Test:* 2,000 examples per hand.
-  - *KITE baseline:* separate training data for every test hand, with the same per-hand budget as training and seeds disjoint from its test data.
+  - *Upper bound:* if one is trained, separate training data for every test hand, with the same per-hand budget as training and seeds disjoint from its test data.
 - **Storage.** An example is about 130 numbers, roughly 0.5 KB as float32, so ~4M examples take about 2 GB. Write sharded HDF5 per split (or `.npz` shards of 100k), with hand descriptors stored once.
 - **Compute.** With box collisions (0.34 ms per check, 20–60% acceptance), each accepted configuration costs about 1–2 ms, so ~4M examples take roughly 1–2 CPU-hours. Templates take about a minute per base mesh, built once. The total is a few CPU-hours, consistent with the overview.
 - **Streaming (optional).** Keep a per-hand pool of about 50k collision-free finger configurations, and draw wrist poses, contacts and noise on the fly in the dataloader. That gives effectively unlimited training data, while the static shards remain the reference for validation and test.
@@ -154,22 +163,23 @@ Each example stores: hand ID, K, template indices (padded to 6), contacts (x, n)
 ### 4.6 Repository layout
 
 ```
-configs/      family.yaml  splits.yaml  sampling.yaml
-kite_data/    assets/ (fetch, topology, geometry, collision, template)
-              hand.py (descriptor, numpy and torch FK)  sample.py  splits.py  writer.py  qa.py
-scripts/      fetch_assets.sh  build_hands.py  make_splits.py  generate.py  qa_report.py
-tests/        test_fk_parity.py  test_invariants.py  test_mask.py  test_determinism.py
-data/         generated outputs (git-ignored)
-reference/    papers and notes
+kite_data/    config.py  leap.py (base model)  topology.py  geometry.py  hand.py  collision.py
+              template.py  urdf.py  build_hands.py  qa.py         (done: Stage A)
+              splits.py  sample.py  writer.py                     (next: Stages B-D)
+scripts/      fetch_assets.sh
+tests/        test_topology.py  test_geometry.py  test_hand.py  test_collision_and_template.py
+third_party/  pinned GET-Zero and Menagerie assets (git-ignored)
+data/         generated outputs and caches (git-ignored)
+reference/    paper links and fetch script
 ```
 
 ### 4.7 Milestones
 
-1. **Assets and FK:** fetch script, topology selection, hand descriptor and the FK parity test.
-2. **Geometry and collision:** the geometry variation, box transplant and collision validation.
-3. **Templates:** surface templates with visibility filtering, plus renders.
+1. ~~**Assets and FK:** fetch script, topology selection, hand descriptor and the FK parity test.~~ Done.
+2. ~~**Geometry and collision:** the geometry variation, box transplant and collision validation.~~ Done.
+3. ~~**Templates:** surface templates with visibility filtering, plus renders.~~ Done.
 4. **v0 dataset:** the sampler and its invariants on about 10 hands, with stats and renders for the team to review.
-5. **v1 dataset:** splits, full generation and a QA report.
+5. **v1 dataset:** splits, full generation and a QA report. Also import GET-Zero's hands as the extra test set.
 6. **z cache:** added once a ψ exists, whether KITE's or our own.
 
 ### 4.8 Risks
@@ -177,5 +187,5 @@ reference/    papers and notes
 - **ψ never ships.** The dataset is unaffected; only the z cache changes.
 - **Template quality.** This is the most LEAP-specific risk. The mitigation is visibility filtering plus visual QA.
 - **Box collisions miss about 1.5% of collisions.** Re-check a 5% audit sample of accepted configurations with exact meshes and report the miss rate.
-- **Attachment shifts move the finger but not its base motor.** Keep shifts small and state this limitation.
+- **The thumb mount never shifts.** Its motor housing can't be separated from the palm mesh. Index, middle and ring mounts shift, and their housings move with them.
 - **The decoder may need KITE-style surface tokens to generalize across geometry.** The template and the 32-point FPS indices are already stored.

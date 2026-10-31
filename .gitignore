@@ -1,2 +1,14 @@
 # Reference papers are downloaded locally with reference/fetch_papers.sh, not committed
 reference/*.pdf
+
+# Third-party assets fetched by scripts/fetch_assets.sh (pinned commits)
+third_party/
+
+# Generated outputs
+data/
+
+# Python
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.venv/

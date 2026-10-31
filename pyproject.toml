@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kite-data"
+version = "0.1.0"
+description = "Synthetic kinematic training data for a morphology-conditioned KITE decoder on LEAP Hand variants"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "trimesh>=4.0",
+  "rtree>=1.0",
+  "mujoco>=3.1",
+  "python-fcl>=0.7",
+  "fast_simplification>=0.1",
+]
+
+[project.optional-dependencies]
+fast = ["embreex"]          # ~100x faster ray casting for the surface-visibility filter
+qa = ["matplotlib>=3.7"]
+dev = ["pytest>=7", "matplotlib>=3.7"]
+
+[tool.setuptools]
+packages = ["kite_data"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
