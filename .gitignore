@@ -1,0 +1,2 @@
+# Reference papers are downloaded locally with reference/fetch_papers.sh, not committed
+reference/*.pdf
