@@ -97,7 +97,7 @@ Here θ̃ is the angle normalized to [−1, 1] by its limits, and p\_j(q\_t) is 
 
 A<sub>ij</sub> = (Q<sub>i</sub><sup>T</sup>K<sub>j</sub>) / √d + b<sub>spd</sub>[D<sub>ij</sub><sup>spd</sup>]
 
-          + b<sub>anc</sub>[D<sub>ij</sub><sup>anc</sup>] + b<sub>desc</sub>[D<sub>ij</sub><sup>desc</sup>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+ b<sub>anc</sub>[D<sub>ij</sub><sup>anc</sup>] + b<sub>desc</sub>[D<sub>ij</sub><sup>desc</sup>]
 
 The b terms are small learned lookup tables, so how joints influence each other depends on how they are connected in the tree.
 
@@ -141,7 +141,7 @@ We generate roughly 0.5–1M examples across the training hands.
 
 min<sub>φ</sub>  𝔼<sub>e, (z, q\_init, q\_goal)</sub> [λ<sub>a</sub> ℒ<sub>action</sub> + λ<sub>c</sub> ℒ<sub>contact</sub>
 
-                                      + λ<sub>fk</sub> ℒ<sub>fk</sub> + λ<sub>lim</sub> ℒ<sub>limit</sub>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+ λ<sub>fk</sub> ℒ<sub>fk</sub> + λ<sub>lim</sub> ℒ<sub>limit</sub>]
 
 **Action:** match the label (KITE's loss). The wrist and fingers are averaged separately so many finger joints don't drown out the wrist.
 
@@ -151,7 +151,7 @@ min<sub>φ</sub>  𝔼<sub>e, (z, q\_init, q\_goal)</sub> [λ<sub>a</sub> ℒ<su
 
 ℒ<sub>contact</sub> = (1/K) ∑<sub>i ∈ S</sub> [‖FK<sub>x</sub>(q̂)<sub>i</sub> − x<sub>i</sub>‖<sup>2</sup>
 
-                         + λ<sub>n</sub>(1 − FK<sub>n</sub>(q̂)<sub>i</sub><sup>T</sup> n<sub>i</sub>)]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+ λ<sub>n</sub>(1 − FK<sub>n</sub>(q̂)<sub>i</sub><sup>T</sup> n<sub>i</sub>)]
 
 **Self-model:** predict where each joint ends up.
 
