@@ -34,12 +34,12 @@ Sources: the KITE and GET-Zero papers (links and a fetch script in [reference/](
 | How does GET-Zero split hands? | 44 training graphs (the hands with working RL experts). Tests are 10 new graphs, 10 new geometries (training graphs with +1.5 cm parts), and 10 with both. | GET-Zero §V, `distill/cfg/dataset/LeapHandRot.yaml` |
 | What graph features does GET-Zero use? | Per-head learned attention biases from shortest-path, parent and child distances. Finger roots on the palm count as adjacent (shortest-path distance 1). The self-model target is each joint's 3D position. Token geometry is joint origin xyz + rpy. Joint limits are left out, and so are axes, because every LEAP axis is (0, 0, −1). | GET-Zero §III, `distill/utils/embodiment_util.py`, `distill/cfg/tokenization/Default.yaml` |
 
-**Where this changes PROJECT_OVERVIEW.md** (not edited yet):
+**Where this changes PROJECT_OVERVIEW.md.** The overview is left unchanged; README.md lists every way the data departs from it.
 
 - **ψ and π are not released.** The "frozen KITE parts" do not exist for us yet, so the oracle-intent and closed-loop evaluation modes are blocked on the release (fallbacks in section 3).
 - **KITE details are off.** KITE has three authors (Wang, Jin, Fang) and six simulated robot embodiments, not five.
 - **The wrist needs no arm workspace.** KITE samples it as a floating base anywhere in a 0.8 m cube, at any orientation. That answers the workspace open question: the arm only matters at deployment.
-- **The volume and compute estimates are low.** KITE uses 10^6 examples per embodiment. The overview's 0.5–1M total is far less per hand, and its 2–6 GPU-hour training estimate is far below KITE's.
+- **The training budget may be low.** KITE uses 10^6 examples per embodiment. We follow the overview's ~1M total by default, which is about 1,000 per hand. Its 2–6 GPU-hour training estimate is also far below KITE's, so run a scaling test before fixing the budget.
 - **The variant table needs new code.** GET-Zero's link removal shortens a finger as it loses joints: the index finger reaches 140 mm with 4 joints, 105 mm with 3 and 88 mm with 2. A joint-count test on those hands would also be a length test. We therefore lock joints instead (decided), and wrote our own generator with continuous lengths and mount shifts, which GET-Zero lacks.
 
 ## 2. Measured facts about the LEAP assets
@@ -47,7 +47,9 @@ Sources: the KITE and GET-Zero papers (links and a fetch script in [reference/](
 These were checked on 2026-10-31 with MuJoCo 3.17, trimesh and python-fcl, on GET-Zero's URDFs and STLs. The scripts are not committed.
 
 - **FK conventions are unambiguous.** A short numpy URDF FK (fixed-axis XYZ rpy) matches MuJoCo's URDF import to 1e-16 m on hands 001, 013, 139 and 600.
-- **Topology counts.** The overview's family, where every present finger has 2–4 joints, contains 126 topologies with a thumb and 54 without. Of the thumb-present ones, 32 have a 3-joint index finger.
+- **Topology counts.** Take the overview's family: 2–4 fingers, each present finger with 2–4 joints.
+  - *Built with GET-Zero's link removal*, where the thumb can only have 3 or 4 joints, it has 126 topologies with a thumb.
+  - *Built with joint locking*, which is what we use and lets the thumb have 2–4 joints too, it has 243, of which 189 have a thumb.
 - **Self-collision is common.** Under uniform joint sampling with an exact, non-convex mesh check (parent–child pairs excluded), about 20% of configurations are collision-free for the full hand. The rate is 45% for hand 013 and 58% for hand 139. Most rejections come from neighbouring fingers swinging into each other, the thumb hitting the index finger, and the thumb hitting the palm.
 - **MuJoCo's default collision is unusable on these meshes.** MuJoCo wraps each STL in its convex hull, and the palm's hull swallows every finger root. As a result, 0% of configurations pass, including q = 0.
 - **Exact mesh checks are slow.** They take 8–13 ms each. Decimating the meshes makes them only about 4× faster and disagrees with the exact check on 8–12% of configurations.
@@ -116,7 +118,7 @@ These were checked on 2026-10-31 with MuJoCo 3.17, trimesh and python-fcl, on GE
    - *Graph matrices:* shortest-path, ancestor and descendant, computed by `Hand.graph()` with the wrist as node 0. GET-Zero's sibling-edge convention is a flag.
 7. **Outputs per hand:** `hand.json`, `hand.xml` (collision MJCF), `hand.urdf` and `template.npz`. The URDF's kinematics are exact; its visuals approximate the stretch.
 8. **QA:**
-   - 35 tests: FK matches MuJoCo to 1e-8, locking keeps finger shape, deformations never fold, the template is deterministic, the gate passes.
+   - Tests: FK matches MuJoCo to 1e-8, locking keeps finger shape, deformations never fold, the template is deterministic, the gate passes.
    - Contact-sheet renders (`python -m kite_data.qa`).
    - Per-hand gate statistics in `index.csv`.
 
@@ -170,9 +172,9 @@ Files are per hand, so joints aren't padded; the loader pads to 16. z is not sto
   - *Validation:* 1,000 examples per hand.
   - *Test:* 2,000 examples per hand.
   - *Upper bound:* if one is trained, separate training data for every test hand, with the same per-hand budget as training and seeds disjoint from its test data.
-- **Storage.** An example is about 130 numbers, roughly 0.5 KB as float32, so ~4M examples take about 2 GB. Write sharded HDF5 per split (or `.npz` shards of 100k), with hand descriptors stored once.
-- **Compute.** With box collisions (0.34 ms per check, 20–60% acceptance), each accepted configuration costs about 1–2 ms, so ~4M examples take roughly 1–2 CPU-hours. Templates take about a minute per base mesh, built once. The total is a few CPU-hours, consistent with the overview.
-- **Streaming (optional).** Keep a per-hand pool of about 50k collision-free finger configurations, and draw wrist poses, contacts and noise on the fly in the dataloader. That gives effectively unlimited training data, while the static shards remain the reference for validation and test.
+- **Storage (measured).** There is one `.npz` per hand per split, and hand descriptors are stored once in `data/hands/`. All splits together are 2.41M examples and take 850 MB. The 1M training examples load in about 5 s and use about 0.9 GB of memory.
+- **Compute (measured, 4 cores).** Building all 1,741 hands takes about 4 minutes, and generating every split about another 4. Box collision checks cost about 0.3 ms each, at 19% acceptance for the full hand and up to 100% for small hands. That is well under the overview's "few CPU hours".
+- **Streaming (optional, not implemented).** Keep a per-hand pool of about 50k collision-free finger configurations, and draw wrist poses, contacts and noise on the fly in the dataloader. That gives effectively unlimited training data, while the static files remain the reference for validation and test.
 
 ### 4.6 Repository layout
 
@@ -195,7 +197,10 @@ reference/    paper links and fetch script
 3. ~~**Templates:** surface templates with visibility filtering, plus renders.~~ Done.
 4. ~~**v0 dataset:** the sampler and its invariants on about 10 hands, with stats and renders for the team to review.~~ Done.
 5. **v1 dataset:** ~~splits, full generation~~ done. Still to do: a QA report, and importing GET-Zero's hands as the extra test set.
-6. **z cache:** added once a ψ exists, whether KITE's or our own.
+6. **z:** add it once a ψ exists, whether KITE's or our own. Computing it at load time may be enough, with no stored cache.
+7. **Check against KITE's code:** compare template, collision and noise conventions when the code arrives, then regenerate if needed.
+
+The README's "What's left" section keeps the current list of remaining work.
 
 ### 4.8 Risks
 
@@ -203,4 +208,5 @@ reference/    paper links and fetch script
 - **Template quality.** This is the most LEAP-specific risk. The mitigation is visibility filtering plus visual QA.
 - **Box collisions miss about 1.5% of collisions.** Re-check a 5% audit sample of accepted configurations with exact meshes and report the miss rate.
 - **The thumb mount never shifts.** Its motor housing can't be separated from the palm mesh. Index, middle and ring mounts shift, and their housings move with them.
+- **KITE's code may use different conventions.** This could affect template sampling, collision pairs, the rotation-noise convention or the world origin. The data is cheap to regenerate (about 8 minutes), so the fix is to align the config and rerun.
 - **The decoder may need KITE-style surface tokens to generalize across geometry.** The template and the 32-point FPS indices are already stored.
