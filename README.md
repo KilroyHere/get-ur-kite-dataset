@@ -2,16 +2,19 @@
 
 Synthetic kinematic training data for a single morphology-conditioned decoder on LEAP Hand variants. The project is described in [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) and the data plan in [DATA_GENERATION_PLAN.md](DATA_GENERATION_PLAN.md).
 
-**Status:** the hand generator (Stage A) is done. The sampler that turns hands into (contacts, q_init, q_goal) examples comes next.
+**Status:** the hand generator, splits and example sampler are done. z = ψ(contacts) is not stored: it can be computed from the stored contacts once a ψ exists (KITE's, or our own).
 
 ## Quickstart
 
 ```bash
 ./scripts/fetch_assets.sh            # pinned LEAP assets from GET-Zero and MuJoCo Menagerie -> third_party/
 pip install -e ".[fast,dev]"         # fast = embreex (100x faster visibility rays)
-pytest                               # ~20 s
+pytest                               # ~30 s
 python -m kite_data.build_hands      # all 243 topologies x 7 geometries -> data/hands/ (~4 min on 4 cores)
-python -m kite_data.qa I4-M4-R4-T4_g0 I3-M0-R2-T2_g1 --pose random   # renders data/qa/sheet.png
+python -m kite_data.splits           # hand-level splits -> data/splits.json
+python -m kite_data.generate         # 2.4M examples for every split -> data/examples/kite/ (~4 min, 850 MB)
+python -m kite_data.qa hands I4-M4-R4-T4_g0 I3-M0-R2-T2_g1 --pose random   # data/qa/hands.png
+python -m kite_data.qa examples data/examples/kite/val/I2-M4-R3-T3_g1.npz  # data/qa/examples.png
 ```
 
 ## The hand family
@@ -52,6 +55,48 @@ p = hand.dof_link_poses(q)             # (n_dof, 4, 4): each movable joint's fra
 g = hand.graph()                       # shortest-path / ancestor / descendant matrices, wrist = node 0
 free = not Collider(hand).collides(q)  # fast self-collision check (~0.3 ms)
 ```
+
+## Splits (`data/splits.json`)
+
+Splits are by hand, fixed before any example is sampled:
+
+| Split | Hands | What it holds out |
+| --- | --- | --- |
+| `train` | 1,015 | 145 layouts, draws 0–6 |
+| `val` | 56 | 8 other layouts, draws 0–6, for model selection only |
+| `test_finger_subset` | 36 | Hands whose fingers are exactly {thumb, ring} or {thumb, index, ring}, nominal geometry |
+| `test_combined` | 216 | The same layouts with random geometry (draws 1–6) |
+| `test_joint_count` | 378 | Every other hand with a 3-joint index finger, draws 0–6 |
+| `test_geometry` | 40 | 10 training layouts with geometries training never sees (draws 7–10) |
+
+Thumb and ring still appear together in larger training hands; only the exact finger sets are held out.
+
+## Training examples (`data/examples/kite/<split>/<hand_id>.npz`)
+
+Each file holds one hand's examples, generated with KITE's recipe (KITE §IV-B, App. A):
+
+1. A contact pose: finger joints uniform within limits, rejected if the hand self-collides. The wrist (KITE's floating base) is uniform in [−0.4, 0.4]³ m with a uniformly random orientation; no arm is involved in training.
+2. K ~ U{2, …, 6} contacts. Each picks a non-empty region (palm or a finger) uniformly, then a template point uniformly within it, with replacement.
+3. A start pose: joints perturbed by N(0, (5% of range)²) and clamped; wrist by 5 mm and 5° (per axis).
+4. The label: joints upstream of a contact take the contact pose; all other joints stay at the start pose. The wrist takes the contact pose.
+
+Default sizes are 1,000 examples per training hand (about 1M in total, as in the overview), 1,000 per validation hand and 2,000 per test hand; override with `--per-hand train=4000`. A `wide` regime (`--regime wide`) gives 20% of examples 5 cm / 30° wrist noise, for robustness ablations.
+
+| Key | Shape | Contents |
+| --- | --- | --- |
+| `k` | (n,) | number of contacts, 2–6 |
+| `template_idx` | (n, 6) | template points that make the contacts; −1 for unused slots |
+| `contact_pos`, `contact_normal` | (n, 6, 3) | contact targets in the world frame (zero in unused slots) |
+| `joints_contact`, `joints_init`, `joints_goal` | (n, n_dof) | finger joints in the hand's canonical order |
+| `wrist_pos_*`, `wrist_quat_*` | (n, 3), (n, 4) | wrist (palm) pose for contact / init / goal; quaternions are w, x, y, z with w ≥ 0 |
+| `mask` | (n, n_dof) | joints that move (upstream of a contact); the wrist always moves |
+| `wide` | (n,) | whether the example used the wide noise regime |
+
+![Four training examples: start pose in grey, label pose in colour, contact targets and normals in black](docs/example_targets.png)
+
+*Four examples for one validation hand: the start pose (grey), the label (coloured; only joints upstream of a contact move) and the K contact targets with their outward normals (black).*
+
+Before writing, every file is checked by re-deriving the contacts from the stored label (they agree to within 1e-7 m). The checks also confirm joint limits, the mask, the label and that contact poses don't collide. `kite_data.dataset.load_split("train")` loads a split into arrays padded to 16 joints (the 1M training examples load in ~5 s and take ~0.9 GB). The example view in `kite_data.qa` draws the start pose, the label and the contacts.
 
 ## Third-party assets
 

@@ -1,8 +1,15 @@
 # Training Data Generation Plan
 
-Status: 2026-10-31. Stage A (the hand generator) is implemented in `kite_data/`; see [README.md](README.md). Stages B–D are still plans.
+Status: 2026-10-31. Stages A–C (hand generator, splits, example sampler) are implemented in `kite_data/`; see [README.md](README.md). The z cache waits for a ψ.
 
-Decisions so far: LEAP hands only; fewer joints means locking joints from the fingertip inward (not GET-Zero's link removal); lengths vary only on the five long links; thumbless hands are included.
+Decisions so far:
+- LEAP hands only.
+- Fewer joints means locking joints from the fingertip inward (not GET-Zero's link removal).
+- Lengths vary only on the five long links.
+- Thumbless hands are included.
+- Wrist poses follow KITE's floating cube, not an arm workspace.
+- The finger-subset test holds out exact finger sets.
+- About 1M training examples by default, as in the overview.
 
 This plan covers the synthetic kinematic data for the GET decoder in [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) (section "Training data"). It follows KITE's own recipe wherever KITE specifies one. Our contacts should look like what KITE's ψ was trained on, and the decoder should expect intents one small step ahead of the current pose, which is how KITE's policy produces them.
 
@@ -68,10 +75,11 @@ These were checked on 2026-10-31 with MuJoCo 3.17, trimesh and python-fcl, on GE
 5. If ψ isn't available in time, there are two options. (a) Re-implement ψ and train it jointly with our decoder. That gives us our own intent space but no KITE policy, so closed-loop evaluation needs scripted intent sequences. (b) Use the raw-contact fallback. The dataset supports both. (KITE's code and data are expected.)
 6. Which upper bound to compare against? Options: a re-implemented KITE decoder trained on each test hand (as the overview says), our GET decoder trained with the test hands included, or none. Test hands get their own training data either way.
 7. What length range? GET-Zero's +1.5 cm parts correspond to scale factors of about 1.2–1.4, beyond 0.8–1.2. Recommendation: keep 0.8–1.2 for training and use those parts as an extrapolation test.
-8. Which split definitions (section 4.3)? Recommendation: exact-subset holdout.
-9. What data volume and GPU budget (section 4.5)?
-10. Which noise regime? KITE's is the default. A wide-noise mixture could be added as an ablation.
+8. ~~Which split definitions?~~ Decided: exact finger sets {thumb, ring} and {thumb, index, ring} are held out (section 4.3). The literal "never together" reading would remove all 144 layouts that contain both, including every 4-finger hand.
+9. What GPU budget? The default is 1,000 examples per training hand (about 1M, as in the overview); raise it with `--per-hand` if a scaling test shows the decoder needs more.
+10. Which noise regime? KITE's is the default. A wide-noise mixture is implemented (`--regime wide`) for an ablation.
 11. Should the contact loss be tied to the labelled points, as in the overview, or be assignment-free, scoring each target against its nearest template point? Both need the template, which we store either way.
+12. ~~Wrist poses from an arm's workspace or KITE's cube?~~ Decided: KITE's cube. This deviates from the overview's "w* ∈ arm workspace". It keeps contacts in the range KITE's ψ was trained on, keeps the data arm-agnostic, and needs no arm choice yet. Changing it later only means regenerating.
 
 ## 4. Plan
 
@@ -112,7 +120,7 @@ These were checked on 2026-10-31 with MuJoCo 3.17, trimesh and python-fcl, on GE
    - Contact-sheet renders (`python -m kite_data.qa`).
    - Per-hand gate statistics in `index.csv`.
 
-### 4.3 Stage B: splits (fixed before sampling)
+### 4.3 Stage B: splits (implemented: `kite_data/splits.py`, `data/splits.json`)
 
 Each topology goes into exactly one bucket, assigned in the order below. Counts are for all 243 topologies.
 
@@ -128,7 +136,7 @@ Each topology goes into exactly one bucket, assigned in the order below. Counts 
 
 Training still contains 3-joint middle and ring fingers, and the thumb and ring finger together inside larger hands. Each test therefore isolates exactly one new factor.
 
-### 4.4 Stage C: sampling examples (KITE's recipe)
+### 4.4 Stage C: sampling examples (implemented: `kite_data/sample.py`, `kite_data/generate.py`)
 
 For each hand instance:
 
@@ -147,12 +155,18 @@ For each hand instance:
 
 There are two regimes. `kite` is the default, used for the main results. `wide` is an ablation in which about 20% of examples get σ_t = 5 cm and σ_R = 30°. Labels are defined the same way in both.
 
-Each example stores: hand ID, K, template indices (padded to 6), contacts (x, n) padded to 6, q_contact, q_init and q_goal (wrist as position plus quaternion; joints in canonical order, padded to 16), the mask, the regime and the seed. z lives in a separate, optional cache keyed by ψ version.
+Each example stores the following; the README has the full key table.
+- K, and template indices padded to 6.
+- Contacts (x, n) padded to 6.
+- q_contact, q_init and q_goal: wrist as position plus quaternion; joints in canonical order.
+- The mask, and whether the wide regime was used.
+
+Files are per hand, so joints aren't padded; the loader pads to 16. z is not stored: compute it from the contacts once a ψ exists.
 
 ### 4.5 Stage D: volume, storage and compute
 
 - **Volume.**
-  - *Train:* 1,015 hands × 4,000 examples ≈ 4M. Raise the per-hand count if the GPU budget allows; run a scaling test early (1k, 4k and 16k per hand on a few hands).
+  - *Train:* 1,015 hands × 1,000 examples ≈ 1M (the overview's figure). Raise the per-hand count if the GPU budget allows; run a scaling test early (1k, 4k and 16k per hand on a few hands).
   - *Validation:* 1,000 examples per hand.
   - *Test:* 2,000 examples per hand.
   - *Upper bound:* if one is trained, separate training data for every test hand, with the same per-hand budget as training and seeds disjoint from its test data.
@@ -165,9 +179,10 @@ Each example stores: hand ID, K, template indices (padded to 6), contacts (x, n)
 ```
 kite_data/    config.py  leap.py (base model)  topology.py  geometry.py  hand.py  collision.py
               template.py  urdf.py  build_hands.py  qa.py         (done: Stage A)
-              splits.py  sample.py  writer.py                     (next: Stages B-D)
+              splits.py  sample.py  generate.py  dataset.py       (done: Stages B-C)
 scripts/      fetch_assets.sh
 tests/        test_topology.py  test_geometry.py  test_hand.py  test_collision_and_template.py
+              test_splits.py  test_sample.py
 third_party/  pinned GET-Zero and Menagerie assets (git-ignored)
 data/         generated outputs and caches (git-ignored)
 reference/    paper links and fetch script
@@ -178,8 +193,8 @@ reference/    paper links and fetch script
 1. ~~**Assets and FK:** fetch script, topology selection, hand descriptor and the FK parity test.~~ Done.
 2. ~~**Geometry and collision:** the geometry variation, box transplant and collision validation.~~ Done.
 3. ~~**Templates:** surface templates with visibility filtering, plus renders.~~ Done.
-4. **v0 dataset:** the sampler and its invariants on about 10 hands, with stats and renders for the team to review.
-5. **v1 dataset:** splits, full generation and a QA report. Also import GET-Zero's hands as the extra test set.
+4. ~~**v0 dataset:** the sampler and its invariants on about 10 hands, with stats and renders for the team to review.~~ Done.
+5. **v1 dataset:** ~~splits, full generation~~ done. Still to do: a QA report, and importing GET-Zero's hands as the extra test set.
 6. **z cache:** added once a ψ exists, whether KITE's or our own.
 
 ### 4.8 Risks
